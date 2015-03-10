@@ -20,10 +20,15 @@
 # along with iphttp.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
+import hmac
+import base64
+import argparse
 from select import select
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from pytun import TunTapDevice
+
+key = None
 
 class TunHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -31,7 +36,10 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
         return self.do_POST(nodata=True)
 
     def do_POST(self, nodata=False):
-        if not nodata:
+        global key
+        if nodata:
+            data = b''
+        else:
             print('Processing POST request')
             # reading
             data_len = int(self.headers.get('content-length', 0))
@@ -39,8 +47,16 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
                 data = self.rfile.read(data_len)
             else:
                 data = b''
-            if data:
-                tun.write(data)
+        # verify signature
+        if key:
+            rsig = self.headers.get('X-Sig')
+            lsig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data).digest()).decode('latin1')
+            if rsig != lsig:
+                print('Bad signature (%s vs %s)'% (rsig, lsig))
+                self.send_error(400)
+                return
+        if data:
+            tun.write(data)
         # writing
         self.send_response(200)
         self.send_header("Content-type", "application/octet-stream")
@@ -49,22 +65,52 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
             print('data available')
             data = tun.read(tun.mtu)
             self.send_header("Content-length", str(len(data)))
+            # send signature
+            if key:
+                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data).digest()).decode('latin1')
+                self.send_header("X-Sig", sig)
             self.end_headers()
             self.wfile.write(data)
         else:
             print('no data available from network')
             self.send_header("Content-length", "0")
+            # send signature
+            if key:
+                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=b'').digest()).decode('latin1')
+                self.send_header("X-Sig", sig)
             self.end_headers()
 
 if __name__ == '__main__':
-    tun = TunTapDevice(name='http0')
-    tun.addr = '192.168.9.10'
-    tun.dstaddr = '192.168.9.11'
-    tun.netmask = '255.255.255.0'
-    tun.mtu = 1500
-    tun.up()
+    parser = argparse.ArgumentParser(description='IP over HTTP client')
+    parser.add_argument('port', type=int,
+            help='Port to listen on')
+    parser.add_argument('--bind', default='',
+            help='Address to bind to (leave out for any)')
+    parser.add_argument('--tun-name', default='http0',
+            help='Tunnel interface name (default %(default)s)')
+    parser.add_argument('--tun-ip', default=None,
+            help='Tunnel local IP address (leave out for manual config)')
+    parser.add_argument('--tun-peer',
+            help='Tunnel remote IP address')
+    parser.add_argument('--tun-mask', default='255.255.255.255',
+            help='Tunnel netmask (default %(default)s)')
+    parser.add_argument('--tun-mtu', type=int, default=1500,
+            help='Tunnel MTU (default %(default)d)')
+    parser.add_argument('--key', default=None,
+            help='Authentication key (leave out for no authentication)')
+    args = parser.parse_args()
 
-    server_address = ('', int(sys.argv[1]))
+    key = args.key
+
+    tun = TunTapDevice(name=args.tun_name)
+    if args.tun_ip:
+        tun.addr = args.tun_ip
+        tun.dstaddr = args.tun_peer
+        tun.netmask = args.tun_mask
+        tun.mtu = args.tun_mtu
+        tun.up()
+
+    server_address = (args.bind, args.port)
     httpd = HTTPServer(server_address, TunHTTPRequestHandler)
     httpd.serve_forever()
 
