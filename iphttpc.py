@@ -21,12 +21,18 @@
 
 import sys
 import hmac
+import hashlib
 import base64
 import argparse
 from select import select
 import urllib.request
 
 from pytun import TunTapDevice
+
+def sign(key, data):
+    if data is None:
+        data = b''
+    return base64.b64encode(hmac.new(key.encode('latin1'), msg=data, digestmod=hashlib.md5).digest()).decode('latin1')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='IP over HTTP client')
@@ -58,22 +64,21 @@ if __name__ == '__main__':
         ret = select([tun], [], [], 2)
         if tun in ret[0]:
             #print('data available from network')
-            data = tun.read(tun.mtu)
+            data = tun.read(tun.mtu+4)
         else:
             #print('no data from network')
             data = None
 
-        req = urllib.request.Request(args.url, data)
+        req = urllib.request.Request(args.url, data=data)
         # send signature
         if args.key:
-            sig = base64.b64encode(hmac.new(args.key.encode('latin1'), msg=data).digest()).decode('latin1')
-            req.add_header('X-Sig', sig)
+            req.add_header('X-Sig', sign(args.key, data))
         response = urllib.request.urlopen(req)
         data = response.read()
         # verify signature
         if args.key:
             rsig = response.info().get('X-Sig')
-            lsig = base64.b64encode(hmac.new(args.key.encode('latin1'), msg=data).digest()).decode('latin1')
+            lsig = sign(args.key, data)
             if rsig != lsig:
                 print('Bad signature! (%s vs. %s)' % (rsig, lsig))
                 continue
