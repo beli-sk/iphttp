@@ -21,6 +21,7 @@
 
 import sys
 import hmac
+import hashlib
 import base64
 import argparse
 from select import select
@@ -50,9 +51,10 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
         # verify signature
         if key:
             rsig = self.headers.get('X-Sig')
-            lsig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data).digest()).decode('latin1')
+            lsig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data, digestmod=hashlib.md5).digest()).decode('latin1')
             if rsig != lsig:
-                print('Bad signature (%s vs %s)'% (rsig, lsig))
+                print('Bad signature (%s vs %s) %d (%s)'% (rsig, lsig, data_len, base64.b64encode(data)))
+                print(''.join(('%s: %s\n' % (k, v) for k,v in self.headers.items())))
                 self.send_error(400)
                 return
         if data:
@@ -63,11 +65,11 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
         ret = select([tun], [], [], 0)
         if tun in ret[0]:
             print('data available')
-            data = tun.read(tun.mtu)
+            data = tun.read(tun.mtu+4)
             self.send_header("Content-length", str(len(data)))
             # send signature
             if key:
-                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data).digest()).decode('latin1')
+                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=data, digestmod=hashlib.md5).digest()).decode('latin1')
                 self.send_header("X-Sig", sig)
             self.end_headers()
             self.wfile.write(data)
@@ -76,7 +78,7 @@ class TunHTTPRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-length", "0")
             # send signature
             if key:
-                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=b'').digest()).decode('latin1')
+                sig = base64.b64encode(hmac.new(key.encode('latin1'), msg=b'', digestmod=hashlib.md5).digest()).decode('latin1')
                 self.send_header("X-Sig", sig)
             self.end_headers()
 
