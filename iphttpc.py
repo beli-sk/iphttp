@@ -20,33 +20,64 @@
 # along with iphttp.  If not, see <http://www.gnu.org/licenses/>.
 
 import sys
+import hmac
+import base64
+import argparse
 from select import select
 import urllib.request
 
 from pytun import TunTapDevice
 
-tun = TunTapDevice(name='http1')
-tun.addr = '192.168.9.11'
-tun.dstaddr = '192.168.9.10'
-tun.netmask = '255.255.255.0'
-tun.mtu = 1500
-tun.up()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='IP over HTTP client')
+    parser.add_argument('url',
+            help='URL of server')
+    parser.add_argument('--tun-name', default='http0',
+            help='Tunnel interface name (default %(default)s)')
+    parser.add_argument('--tun-ip', default=None,
+            help='Tunnel local IP address (leave out for manual config)')
+    parser.add_argument('--tun-peer',
+            help='Tunnel remote IP address')
+    parser.add_argument('--tun-mask', default='255.255.255.255',
+            help='Tunnel netmask (default %(default)s)')
+    parser.add_argument('--tun-mtu', type=int, default=1500,
+            help='Tunnel MTU (default %(default)d)')
+    parser.add_argument('--key', default=None,
+            help='Authentication key (leave out for no authentication)')
+    args = parser.parse_args()
+    
+    tun = TunTapDevice(name=args.tun_name)
+    if args.tun_ip:
+        tun.addr = args.tun_ip
+        tun.dstaddr = args.tun_peer
+        tun.netmask = args.tun_mask
+        tun.mtu = 1500
+        tun.up()
+    
+    while True:
+        ret = select([tun], [], [], 2)
+        if tun in ret[0]:
+            #print('data available from network')
+            data = tun.read(tun.mtu)
+        else:
+            #print('no data from network')
+            data = None
 
-while True:
-    ret = select([tun], [], [], 2)
-    if tun in ret[0]:
-        print('data available from network')
-        data = tun.read(tun.mtu)
-    else:
-        print('no data from network')
-        data = None
+        req = urllib.request.Request(args.url, data)
+        # send signature
+        if args.key:
+            sig = base64.b64encode(hmac.new(args.key.encode('latin1'), msg=data).digest()).decode('latin1')
+            req.add_header('X-Sig', sig)
+        response = urllib.request.urlopen(req)
+        data = response.read()
+        # verify signature
+        if args.key:
+            rsig = response.info().get('X-Sig')
+            lsig = base64.b64encode(hmac.new(args.key.encode('latin1'), msg=data).digest()).decode('latin1')
+            if rsig != lsig:
+                print('Bad signature! (%s vs. %s)' % (rsig, lsig))
+                continue
+        if data:
+            #print('received data from http')
+            tun.write(data)
 
-    proxy_support = urllib.request.ProxyHandler({})
-    opener = urllib.request.build_opener(proxy_support)
-    urllib.request.install_opener(opener)
-    req = urllib.request.Request(sys.argv[1], data)
-    response = urllib.request.urlopen(req)
-    data = response.read()
-    if data:
-        print('received data from http')
-        tun.write(data)
